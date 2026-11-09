@@ -3,7 +3,7 @@
   "version": "0.2.0",
   "private": true,
   "license": "MIT",
-  "description": "A local-first VS Code workspace for collaborative LaTeX editing.",
+  "description": "Folder Relay synchronizes local project folders for collaboration in VS Code.",
   "engines": { "node": ">=24" },
   "workspaces": ["apps/*"],
   "scripts": {

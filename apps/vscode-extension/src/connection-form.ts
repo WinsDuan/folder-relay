@@ -27,7 +27,7 @@ export function openConnectionForm(
   initial: ConnectionFormState,
   connect: (input: ConnectionFormInput) => Promise<void>,
 ): vscode.WebviewPanel {
-  const panel = vscode.window.createWebviewPanel('lsw.connectionForm', 'LSW · 连接共享工作区', vscode.ViewColumn.Active, {
+  const panel = vscode.window.createWebviewPanel('lsw.connectionForm', 'Folder Relay · 连接共享工作区', vscode.ViewColumn.Active, {
     enableScripts: true,
     localResourceRoots: [],
   });
@@ -130,7 +130,7 @@ function connectionHtml(initial: ConnectionFormState, nonce: string): string {
 <body>
   <main>
     <header>
-      <p class="product">LaTeX Sync Workspace</p>
+      <p class="product">Folder Relay</p>
       <h1>连接共享工作区</h1>
       <p class="muted">填写发起人提供的连接信息。加入后，重新打开此文件夹会自动连接。</p>
     </header>

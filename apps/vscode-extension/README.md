@@ -1,12 +1,14 @@
-# LaTeX Sync Workspace
+# Folder Relay
 
-LaTeX Sync Workspace synchronizes a LaTeX project between local VS Code folders. Each member works with real files, so local editing tools and LaTeX compilers can use the project directly.
+Folder Relay synchronizes project files between local VS Code folders. A shared folder can contain source code, Markdown, CSV data, LaTeX and images. Each member works with real local files that editors, scripts, and compilers can use directly.
 
-1. Open a local folder and click **LSW 连接工作区** in the status bar, or run **LSW: Join Shared Project**.
+1. Open a local folder and click **Folder Relay 连接工作区** in the status bar, or run **LSW: Join Shared Project**.
 2. In the connection form, enter the server address, workspace ID and token supplied by the host. The first member opens the existing project folder. Other members can join from empty folders to download the shared files.
 3. Reopen the same folder to reconnect automatically. You can edit saved files offline. The extension retries when the connection returns and preserves copies when edits conflict.
 
-The extension connects to a separately running LSW server. A host can run it locally for a two-window test or provide a reachable encrypted address for other computers. TeX compilation uses each member's local toolchain.
+The extension connects to a separately running collaboration server. A host can run it locally for a two-window test or provide a reachable encrypted address for other computers. Changes sync as saved file versions. Supported text files can merge non-overlapping edits; binary files sync as whole files and conflicting versions are preserved.
+
+Folder Relay was previously named LaTeX Sync Workspace. The extension keeps its existing identity and the `LSW:` command prefix for upgrades.
 
 The project mode automatically saves eligible editor changes and synchronizes files written by external tools, including AI tools. Each member can edit and compile their own local copy when peers are offline. Disjoint text edits merge when the clients reconnect. Overlapping changes are kept for review while the rest of the project keeps syncing.
 

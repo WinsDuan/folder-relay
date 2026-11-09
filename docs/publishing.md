@@ -21,7 +21,7 @@ GitHub 仓库用来托管源码和文档。GitHub Release 可以附上 `.vsix`�
 
 ## 用 GitHub Release 分发 VSIX
 
-在仓库根目录执行以下命令，生成 `apps/vscode-extension/latex-sync-workspace-0.2.3.vsix`。
+在仓库根目录执行以下命令，生成 `apps/vscode-extension/latex-sync-workspace-0.2.4.vsix`。
 
 ```powershell
 npm ci
@@ -29,7 +29,7 @@ npm test
 npm run package:vsix
 ```
 
-推送源码后，在 GitHub 的 **Releases** 页面新建发行版，例如使用标签 `v0.2.3`，附上构建出的 VSIX。把 VSIX 作为发行版附件，源码仓库保持可重建。下载安装包的同学可以在 VS Code 的扩展面板选择 **从 VSIX 安装**。
+推送源码后，在 GitHub 的 **Releases** 页面新建发行版，例如使用标签 `v0.2.4`，附上构建出的 VSIX。把 VSIX 作为发行版附件，源码仓库保持可重建。下载安装包的同学可以在 VS Code 的扩展面板选择 **从 VSIX 安装**。
 
 [GitHub Release 官方说明](https://docs.github.com/en/repositories/releasing-projects-on-github/managing-releases-in-a-repository)
 
@@ -38,7 +38,7 @@ npm run package:vsix
 1. 登录 [Marketplace 发布者管理页](https://marketplace.visualstudio.com/manage/publishers/)，创建自己的发布者，记下实际的 Publisher ID。
 2. 在 `apps/vscode-extension/package.json` 将 `publisher` 改成你名下的实际 ID。当前值 `lsw-local` 用于本地试用。确认扩展名称 `latex-sync-workspace` 和版本号，更新该版本的发行说明。
 3. 重新运行 `npm run package:vsix`，在一个独立的测试工作区安装新 VSIX，验证连接窗口、下载和双向同步。若发布者 ID 改了，新旧扩展 ID 也不同。原先用 `lsw-local` 安装的用户需要保存连接信息和本地文件，切换到新扩展后重新加入。
-4. 在发布者管理页上传刚构建的 VSIX，确认列表中的发布者、版本和描述。发布可用后，在 VS Code 按 `Ctrl+Shift+X` 搜索 **LaTeX Sync Workspace**，也可以用精确查询 `@id:你的发布者ID.latex-sync-workspace`。
+4. 在发布者管理页上传刚构建的 VSIX，确认列表中的发布者、版本和描述。发布可用后，在 VS Code 按 `Ctrl+Shift+X` 搜索 **Folder Relay**，也可以用精确查询 `@id:你的发布者ID.latex-sync-workspace`。
 
 从商店安装的是 VS Code 扩展。每组成员仍需连接自己小组的协作服务，服务地址、工作区 ID 和访问令牌由服务发起人提供。
 

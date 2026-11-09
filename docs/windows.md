@@ -17,7 +17,7 @@ npm run package:vsix
 VSIX 打包在 `apps/vscode-extension`。可以在 VS Code 命令面板选择 `Extensions: Install from VSIX...` 并选择生成的文件。下方命令适用于已将 `code` 加入 PATH 的环境。
 
 ```powershell
-code --install-extension .\apps\vscode-extension\latex-sync-workspace-0.2.3.vsix
+code --install-extension .\apps\vscode-extension\latex-sync-workspace-0.2.4.vsix
 ```
 
 ## 2. 启动协作服务

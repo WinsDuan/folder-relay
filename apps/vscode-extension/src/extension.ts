@@ -65,7 +65,7 @@ function validateUrl(value: string): URL {
 }
 
 function showJoinEntry(bar: vscode.StatusBarItem): void {
-  bar.text = '$(plug) LSW 连接工作区';
+  bar.text = '$(plug) Folder Relay 连接工作区';
   bar.command = 'lsw.joinProject';
   bar.tooltip = '打开共享工作区连接窗口';
 }
@@ -633,7 +633,7 @@ class Session implements vscode.Disposable {
     this.statusBar.command = state === 'Conflict' && this.conflictId ? 'lsw.reviewConflict' : 'lsw.status';
     this.statusBar.tooltip = state === 'Saved'
       ? 'Shared update confirmed on the server. Save the native file separately with Ctrl+S.'
-      : state === 'Conflict' ? '点击查看保留的冲突版本' : 'Show LaTeX Sync Workspace status';
+      : state === 'Conflict' ? '点击查看保留的冲突版本' : 'Show Folder Relay status';
     this.statusBar.show();
   }
 

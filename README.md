@@ -1,10 +1,14 @@
-<img src="apps/vscode-extension/media/lsw-icon.png" alt="LaTeX Sync Workspace 图标" width="64" height="64">
+<img src="apps/vscode-extension/media/lsw-icon.png" alt="Folder Relay 图标" width="64" height="64">
 
-# LaTeX Sync Workspace
+# Folder Relay
 
-LaTeX Sync Workspace（LSW）让多位成员在各自的 VS Code 中编辑同一份 LaTeX 项目。项目文件保存在各自的电脑上，可以用本机编辑器、Codex 或 Claude 修改，也可以用本机的 LaTeX 工具链编译。连上协作服务后，LSW 同步文件。断网时仍可编辑已有文件，恢复连接后再同步。
+**VS Code 多文件工作区协作**
 
-![三台电脑各自打开本地 LaTeX 文件，通过同一个 LSW 服务同步](docs/assets/latex-sync-workspace-overview.png)
+Folder Relay 让小组成员在各自的 VS Code 中维护同一个项目目录。把 Markdown 说明、Python 脚本、CSV 数据、LaTeX 正文和图片放在一起，保存后的文件版本会按项目内的相对路径同步。项目在每台电脑上都有一份本地副本，断网时也能继续编辑，恢复连接后再同步。符合条件的非重叠文本改动可以自动合并，图片等二进制文件按整份同步。
+
+![Folder Relay 产品图，浅色文件夹中叠放文档、图片和代码卡片](docs/assets/folder-relay-overview.png)
+
+项目原名 LaTeX Sync Workspace。新版沿用已有扩展 ID、`LSW:` 命令和工作区连接配置，可直接从旧版升级。
 
 | 你想做什么 | 从哪里开始 |
 | --- | --- |
@@ -23,7 +27,7 @@ npm ci
 npm run package:vsix
 ```
 
-从 VS Code 的扩展面板选择 **从 VSIX 安装**，安装 `apps/vscode-extension/latex-sync-workspace-0.2.3.vsix`。按[使用指南](docs/project.md#启动本机服务)启动服务，然后用 VS Code 打开要分享的项目目录，点击状态栏的 **LSW 连接工作区**。另开一个 VS Code 窗口，打开新建的空文件夹，用相同的连接信息加入。第一次可以用 [LaTeX 示例](examples/phase1/main.tex)做测试。
+从 VS Code 的扩展面板选择 **从 VSIX 安装**，安装 `apps/vscode-extension/latex-sync-workspace-0.2.4.vsix`。按[使用指南](docs/project.md#启动本机服务)启动服务，然后用 VS Code 打开要分享的项目目录，点击状态栏的 **Folder Relay 连接工作区**。另开一个 VS Code 窗口，打开新建的空文件夹，用相同的连接信息加入。可以用几个 Markdown、Python、CSV 文件试同步，也可以复制 [LaTeX 示例](examples/phase1)体验写作和本地编译。
 
 ## 仓库内容
 

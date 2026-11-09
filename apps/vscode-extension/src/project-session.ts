@@ -246,7 +246,7 @@ export function registerProjectCommands(context: vscode.ExtensionContext, comman
     }
     const { state, files, conflicts, error } = getStatus();
     const icon = state === 'Saved' ? 'check' : state === 'Conflict' || state === 'Error' ? 'warning' : 'sync';
-    bar.text = '$(' + icon + ') LSW ' + LABELS[state];
+    bar.text = '$(' + icon + ') Folder Relay ' + LABELS[state];
     const count = conflicts ? ' · ' + conflicts + ' 个冲突' : '';
     bar.tooltip = files + ' 个文件' + count + (error ? '\n' + error : '');
     bar.command = state === 'Conflict' ? 'lsw.reviewProjectConflict' : 'lsw.projectStatus';
@@ -430,7 +430,7 @@ export function registerProjectCommands(context: vscode.ExtensionContext, comman
     vscode.commands.registerCommand('lsw.projectStatus', (options?: { quiet?: boolean }) => {
       const status = getStatus();
       if (!options?.quiet) {
-        void vscode.window.showInformationMessage('LSW ' + LABELS[status.state]
+        void vscode.window.showInformationMessage('Folder Relay ' + LABELS[status.state]
           + (status.error ? '。' + status.error : '。共 ' + status.files + ' 个文件。'));
       }
       return status;

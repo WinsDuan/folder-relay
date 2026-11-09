@@ -32,3 +32,7 @@ npm run package:vsix
 重新构建的 0.2.2 安装包已在 Windows 上用 VS Code 1.122.1 复测，工作区和旧单文件模式均通过端到端测试，本地 XeLaTeX 编译通过。`npm test` 共 12 项通过，TypeScript 检查通过。
 
 0.2.3 添加了扩展图标。安装包和 GitHub README 使用同一份 256 × 256 PNG，已核对安装后的图标文件。同步程序与已验证的 0.2.2 构建一致。
+
+更名为 Folder Relay 前，用 0.2.3 安装包在两个隔离的 VS Code 窗口验证了混合工作区。Markdown、Python 和 CSV 与 LaTeX、BibTeX、PNG 一起下载。双方先后编辑同一 Markdown 文件，验证了编辑器保存与外部程序写盘的双向同步。两端离线修改另一份 Markdown 的不同段落，重连后自动合并。
+
+0.2.4 更新扩展显示名称和连接窗口标题。TypeScript 检查、12 项自动测试和两个隔离 VS Code 窗口的工作区测试均通过。
