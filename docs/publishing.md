@@ -1,14 +1,14 @@
 # 源码、安装包和扩展商店发布
 
-GitHub 仓库用来托管源码和文档。GitHub Release 可以附上 `.vsix`，方便别人下载后在 VS Code 选择 **从 VSIX 安装**。要让用户直接在 VS Code 扩展面板里搜索和安装，还需要将扩展发布到 Visual Studio Marketplace。
+[Folder Relay 的 GitHub 仓库](https://github.com/WinsDuan/folder-relay)托管源码和文档。[GitHub Releases](https://github.com/WinsDuan/folder-relay/releases) 提供 `.vsix`，下载后可在 VS Code 选择 **从 VSIX 安装**。要让用户直接在 VS Code 扩展面板里搜索和安装，还需要将扩展发布到 Visual Studio Marketplace。
 
 ## 推送源码到 GitHub
 
-1. 在 GitHub 新建一个仓库，名称可以用 `latex-sync-workspace`。本地仓库已经有 README、许可证和忽略规则，新建远程仓库时无需再生成这些文件。
+1. 在 GitHub 新建一个仓库，名称可以用 `folder-relay`。本地仓库已经有 README、许可证和忽略规则，新建远程仓库时无需再生成这些文件。
 2. 从 GitHub 的 Quick Setup 复制实际仓库地址。在本地仓库根目录运行以下命令，将 `OWNER` 替换为实际账号或组织名。
 
    ```powershell
-   git remote add origin https://github.com/OWNER/latex-sync-workspace.git
+   git remote add origin https://github.com/OWNER/folder-relay.git
    git remote -v
    git push -u origin main
    ```

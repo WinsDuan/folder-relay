@@ -10,6 +10,8 @@ Folder Relay 让小组成员在各自的 VS Code 中维护同一个项目目录�
 
 项目原名 LaTeX Sync Workspace。新版沿用已有扩展 ID、`LSW:` 命令和工作区连接配置，可直接从旧版升级。
 
+组员可以从 [GitHub Releases](https://github.com/WinsDuan/folder-relay/releases/latest) 下载 `.vsix`，在 VS Code 扩展面板选择 **从 VSIX 安装**。协作服务由发起人启动。
+
 | 你想做什么 | 从哪里开始 |
 | --- | --- |
 | 了解主要功能、适用场景和三人分工示例 | [项目说明](docs/overview.md) |
