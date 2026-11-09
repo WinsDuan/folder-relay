@@ -1,0 +1,49 @@
+{
+  "name": "latex-sync-workspace",
+  "displayName": "LaTeX Sync Workspace",
+  "description": "Automatic collaboration and offline editing for a native LaTeX project folder.",
+  "publisher": "lsw-local",
+  "version": "0.2.2",
+  "type": "module",
+  "license": "MIT",
+  "engines": { "vscode": "^1.96.0" },
+  "categories": ["Other"],
+  "keywords": ["latex", "collaboration", "workspace sync", "offline"],
+  "extensionKind": ["workspace"],
+  "activationEvents": ["onStartupFinished"],
+  "main": "./dist/extension.cjs",
+  "contributes": {
+    "commands": [
+      { "command": "lsw.joinProject", "title": "LSW: Join Shared Project" },
+      { "command": "lsw.projectStatus", "title": "LSW: Show Project Status" },
+      { "command": "lsw.leaveProject", "title": "LSW: Leave Shared Project" },
+      { "command": "lsw.reviewProjectConflict", "title": "LSW: Review Project Conflict" },
+      { "command": "lsw.publishResolvedProjectFile", "title": "LSW: Publish Resolved Project File" },
+      { "command": "lsw.connect", "title": "LSW: Connect Single File (Legacy)" },
+      { "command": "lsw.disconnect", "title": "LSW: Disconnect" },
+      { "command": "lsw.status", "title": "LSW: Show Sync Status" },
+      { "command": "lsw.prepareAiEdit", "title": "LSW: Prepare AI Edit" },
+      { "command": "lsw.reviewConflict", "title": "LSW: Review Conflict" }
+    ]
+  },
+  "scripts": {
+    "build": "node esbuild.mjs",
+    "typecheck": "tsc --noEmit",
+    "package": "npm run build && vsce package --no-dependencies --allow-missing-repository",
+    "test": "node --test tests/*.test.mjs"
+  },
+  "dependencies": {
+    "@hocuspocus/provider": "4.8.0",
+    "fast-diff": "1.3.0",
+    "ws": "^8.18.0",
+    "yjs": "13.6.33"
+  },
+  "devDependencies": {
+    "@types/node": "^22.18.0",
+    "@types/vscode": "1.96.0",
+    "@types/ws": "^8.18.0",
+    "@vscode/vsce": "4.1.0",
+    "esbuild": "^0.25.0",
+    "typescript": "^5.9.0"
+  }
+}

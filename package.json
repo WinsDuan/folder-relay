@@ -1,0 +1,26 @@
+{
+  "name": "lsw-monorepo",
+  "version": "0.2.0",
+  "private": true,
+  "license": "MIT",
+  "description": "A local-first VS Code workspace for collaborative LaTeX editing.",
+  "engines": { "node": ">=24" },
+  "workspaces": ["apps/*"],
+  "scripts": {
+    "build": "npm run build --workspaces --if-present",
+    "start": "npm run start -w @lsw/collab-server",
+    "test": "npm run test --workspaces --if-present && node --test tests/protocol.test.mjs",
+    "test:vscode": "npm run build && node tests/run-vscode.mjs",
+    "test:project": "npm run build && node tests/run-project-vscode.mjs",
+    "package:vsix": "npm run package -w apps/vscode-extension"
+  },
+  "devDependencies": {
+    "@hocuspocus/provider": "4.8.0",
+    "@vscode/test-electron": "3.1.0",
+    "ws": "8.21.0",
+    "yjs": "13.6.33"
+  },
+  "overrides": {
+    "yjs": "13.6.33"
+  }
+}
