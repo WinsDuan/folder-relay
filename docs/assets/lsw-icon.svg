@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256" role="img" aria-labelledby="title">
+  <title id="title">LaTeX Sync Workspace</title>
+  <rect x="8" y="8" width="240" height="240" rx="55" fill="#102746" stroke="#41678F" stroke-width="3" />
+  <g fill="none" stroke="#68A8FF" stroke-width="13" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M83 78a67 67 0 0 1 112 49m-11-11 11 11 11-11" />
+    <path d="M173 178a67 67 0 0 1-112-49m-11 11 11-11 11 11" />
+  </g>
+  <path fill="#F5F9FF" d="M104 77h35l24 24v67a9 9 0 0 1-9 9h-50a9 9 0 0 1-9-9V86a9 9 0 0 1 9-9Z" />
+  <path fill="#A8CCFF" d="M139 77v16a8 8 0 0 0 8 8h16Z" />
+  <path d="M111 123h35m-35 19h25" fill="none" stroke="#326AAF" stroke-width="8" stroke-linecap="round" />
+</svg>

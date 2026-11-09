@@ -1,9 +1,14 @@
+<img src="apps/vscode-extension/media/lsw-icon.png" alt="LaTeX Sync Workspace 图标" width="64" height="64">
+
 # LaTeX Sync Workspace
 
 LaTeX Sync Workspace（LSW）让多位成员在各自的 VS Code 中编辑同一份 LaTeX 项目。项目文件保存在各自的电脑上，可以用本机编辑器、Codex 或 Claude 修改，也可以用本机的 LaTeX 工具链编译。连上协作服务后，LSW 同步文件。断网时仍可编辑已有文件，恢复连接后再同步。
 
+![三台电脑各自打开本地 LaTeX 文件，通过同一个 LSW 服务同步](docs/assets/latex-sync-workspace-overview.png)
+
 | 你想做什么 | 从哪里开始 |
 | --- | --- |
+| 了解主要功能、适用场景和三人分工示例 | [项目说明](docs/overview.md) |
 | 安装扩展、启动本机服务、试用两个窗口 | [使用指南](docs/project.md) |
 | 让另外两台电脑加入同一项目 | [三台电脑怎么连接](docs/project.md#三台电脑怎么连接) |
 | 给小组配置一个常在线的服务地址 | [部署指南](docs/deployment.md) |
@@ -18,7 +23,7 @@ npm ci
 npm run package:vsix
 ```
 
-从 VS Code 的扩展面板选择 **从 VSIX 安装**，安装 `apps/vscode-extension/latex-sync-workspace-0.2.2.vsix`。按[使用指南](docs/project.md#启动本机服务)启动服务，然后用 VS Code 打开要分享的项目目录，点击状态栏的 **LSW 连接工作区**。另开一个 VS Code 窗口，打开新建的空文件夹，用相同的连接信息加入。第一次可以用 [LaTeX 示例](examples/phase1/main.tex)做测试。
+从 VS Code 的扩展面板选择 **从 VSIX 安装**，安装 `apps/vscode-extension/latex-sync-workspace-0.2.3.vsix`。按[使用指南](docs/project.md#启动本机服务)启动服务，然后用 VS Code 打开要分享的项目目录，点击状态栏的 **LSW 连接工作区**。另开一个 VS Code 窗口，打开新建的空文件夹，用相同的连接信息加入。第一次可以用 [LaTeX 示例](examples/phase1/main.tex)做测试。
 
 ## 仓库内容
 

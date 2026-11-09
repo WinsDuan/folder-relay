@@ -50,7 +50,7 @@ npm start
 
 ## 在本机用两个窗口试用
 
-1. 在仓库根目录执行 `npm run package:vsix`。在 VS Code 的扩展面板选择 **从 VSIX 安装**，选取 `apps/vscode-extension/latex-sync-workspace-0.2.2.vsix`。也可以安装组员拿到的同版本 VSIX。
+1. 在仓库根目录执行 `npm run package:vsix`。在 VS Code 的扩展面板选择 **从 VSIX 安装**，选取 `apps/vscode-extension/latex-sync-workspace-0.2.3.vsix`。也可以安装组员拿到的同版本 VSIX。
 2. 在第一个 VS Code 窗口用 **文件 → 打开文件夹** 打开已有 LaTeX 项目。点击状态栏 **LSW 连接工作区**，也可以按 `Ctrl+Shift+P` 搜索 `LSW: Join Shared Project`。
 3. 在 **连接共享工作区** 窗口确认当前本地文件夹，再填写下表。点 **连接工作区**，等状态栏显示 **工作区已同步**。
 
