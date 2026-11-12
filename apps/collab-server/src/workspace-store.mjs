@@ -1,8 +1,7 @@
 import { createHash } from 'node:crypto';
+import { DEFAULT_MAX_WORKSPACE_BYTES, MAX_FILE_BYTES, MAX_PATHS } from './config.mjs';
 
-export const MAX_FILE_BYTES = 16 * 1024 * 1024;
-const MAX_WORKSPACE_BYTES = 128 * 1024 * 1024;
-const MAX_PATHS = 4096;
+export { MAX_FILE_BYTES };
 const INVALID_NAME = /[<>:"\\|?*\u0000-\u001f\u007f]/u;
 const RESERVED_NAME = /^(?:CON|PRN|AUX|NUL|CONIN\$|CONOUT\$|COM[1-9¹²³]|LPT[1-9¹²³])$/iu;
 
@@ -25,7 +24,7 @@ function pathsCollide(path, other) {
   return true;
 }
 
-export function openWorkspaceStore(db) {
+export function openWorkspaceStore(db, maxWorkspaceBytes = DEFAULT_MAX_WORKSPACE_BYTES) {
   db.exec('CREATE TABLE IF NOT EXISTS workspace_files ('
     + 'workspace_id TEXT NOT NULL, path_key TEXT NOT NULL, path TEXT NOT NULL,'
     + 'revision INTEGER NOT NULL CHECK(revision > 0), sha256 TEXT, bytes BLOB,'
@@ -51,14 +50,27 @@ export function openWorkspaceStore(db) {
     read(workspaceId, path, revision) {
       return read.get(workspaceId, path.toLowerCase(), path, revision);
     },
-    commit(workspaceId, path, base, bytes) {
+    /**
+     * Runs `mutate` in one explicit SQLite transaction. node:sqlite is
+     * synchronous and this process is the only writer, so nothing can interleave
+     * between the revision check and the commit. `onMutate(file)` runs inside the
+     * same transaction — that is where the seq event and the idempotency record
+     * are written, so a failure anywhere rolls the whole commit back.
+     */
+    commit(workspaceId, path, base, bytes, onMutate) {
       const key = path.toLowerCase();
       const current = entry.get(workspaceId, key);
       if (current && current.path !== path) return { status: 409, error: 'path-collision' };
-      if ((current?.revision ?? 0) !== base) return { status: 412, error: 'revision-changed' };
+      if ((current?.revision ?? 0) !== base) {
+        return {
+          status: 412,
+          error: 'revision-changed',
+          file: current ? { path: current.path, revision: current.revision, sha256: current.sha256, size: current.size } : { path, revision: 0, sha256: null, size: 0 },
+        };
+      }
       const digest = bytes === null ? null : createHash('sha256').update(bytes).digest('hex');
       if (digest === (current?.sha256 ?? null)) {
-        return { status: 200, file: current ?? { path, revision: 0, sha256: null, size: 0 } };
+        return { status: 200, file: current ?? { path, revision: 0, sha256: null, size: 0 }, unchanged: true };
       }
       const size = bytes?.byteLength ?? 0;
       if (size > MAX_FILE_BYTES) return { status: 413, error: 'file-too-large' };
@@ -69,16 +81,25 @@ export function openWorkspaceStore(db) {
           return { status: 409, error: 'path-collision' };
         }
         const total = files.reduce((sum, file) => sum + file.size, 0);
-        if ((!current && files.length >= MAX_PATHS) || total - (current?.size ?? 0) + size > MAX_WORKSPACE_BYTES) {
+        if ((!current && files.length >= MAX_PATHS) || total - (current?.size ?? 0) + size > maxWorkspaceBytes) {
           return { status: 507, error: 'workspace-capacity' };
         }
       }
 
-      // A single process owns this connection. No request can interleave
-      // between the revision check and the synchronous WAL commit.
       const revision = base + 1;
-      write.run(workspaceId, key, path, revision, digest, bytes);
-      return { status: 200, file: { path, revision, sha256: digest, size } };
+      db.exec('BEGIN IMMEDIATE');
+      try {
+        write.run(workspaceId, key, path, revision, digest, bytes);
+        const file = { path, revision, sha256: digest, size };
+        const extra = onMutate?.(file) ?? null;
+        db.exec('COMMIT');
+        return { status: 200, file, extra };
+      } catch (error) {
+        try {
+          db.exec('ROLLBACK');
+        } catch { /* the failed statement may already have ended the transaction */ }
+        throw error;
+      }
     },
   };
 }

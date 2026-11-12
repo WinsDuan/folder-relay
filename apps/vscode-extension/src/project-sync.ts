@@ -2,12 +2,39 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import { patches, type TextPatch } from './editor-model.js';
+import { hasOfficeOwnerFile, isOfficeDocument, isOfficeOwnerFile } from './office-files.js';
+import {
+  CHUNKED_UPLOAD_THRESHOLD,
+  DEFAULT_CHUNK_BYTES,
+  EventChannel,
+  PENDING_RETRY_MS,
+  RANGE_RESUME_THRESHOLD,
+  SAFETY_POLL_MS,
+  fallbackPollMs,
+  idempotencyKey,
+  isLoopbackEndpoint,
+  nextChunk,
+  normalizeChunkBytes,
+  parseContentRange,
+  pickUploadOffset,
+  planRangeResponse,
+  rangeHeader,
+  resumeOffsetFromReceived,
+  uploadSessionKey,
+  type Capabilities,
+  type LinkState,
+  type RemoteChange,
+} from './transport.js';
 
 const FILE_LIMIT = 16 * 1024 * 1024;
 const TEXT_MERGE_LIMIT = 1024 * 1024;
 const MANIFEST_LIMIT = 4096;
 const POLL_MS = 650;
 const DEBOUNCE_MS = 150;
+/** 续传水位落盘位置（与 `base.row.revision` 同在 checkout 目录，§6.6）。 */
+const SEQUENCE_FILE = 'sequence.json';
+/** 单次 Range 下载的网络抖动重试次数（buffer 只在内存里，跨轮重来由内核负责）。 */
+const RANGE_RETRIES = 2;
 const INVALID_NAME = /[\u0000-\u001f\u007f<>:"\\|?*]/;
 const DEVICE_NAME = /^(?:CON|PRN|AUX|NUL|CONIN\$|CONOUT\$|COM[1-9¹²³]|LPT[1-9¹²³])$/i;
 const UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
@@ -73,7 +100,7 @@ interface ProjectOptions {
 }
 
 export interface ProjectStatus {
-  state: 'Starting' | 'Syncing' | 'Saved' | 'Offline' | 'Conflict' | 'Error' | 'Disconnected';
+  state: 'Starting' | 'Syncing' | 'Saved' | 'Offline' | 'Reconnecting' | 'Conflict' | 'Error' | 'Disconnected';
   files: number;
   conflicts: number;
   error?: string;
@@ -81,6 +108,8 @@ export interface ProjectStatus {
 
 class Offline extends Error {}
 class Retry extends Error {}
+/** 服务端没有这个 v1 接口（404/405/501）：不是错误，而是「该降级」。 */
+class Unsupported extends Error {}
 
 function hash(value: string | Uint8Array): string {
   return createHash('sha256').update(value).digest('hex');
@@ -100,6 +129,7 @@ function isPortablePath(relative: string): boolean {
 export function isProjectPath(relative: string): boolean {
   return isPortablePath(relative) && relative.split('/').every(component =>
     (!component.startsWith('.') || component === '.latexmkrc') && !LOCAL_DIRS.has(component.toLowerCase()))
+    && !isOfficeOwnerFile(path.posix.basename(relative))
     && !GENERATED.test(relative) && !relative.endsWith('~') && !relative.toLowerCase().endsWith('.tmp');
 }
 
@@ -208,6 +238,10 @@ export class ProjectSync {
   private readonly fingerprints = new Map<string, { stamp: string; file: LocalFile }>();
   private readonly missingSince = new Map<string, number>();
   private readonly lifetime = new AbortController();
+  /** 推送送达但还没 reconcile 的 path（key → 事件行；删除事件用 sha256=null/size=0 的墓碑）。 */
+  private readonly pending = new Map<string, FileRevision>();
+  /** 未完成的分片上传会话（同内容重试复用 offset）。 */
+  private readonly uploads = new Map<string, { id: string; offset: number; chunkBytes: number }>();
   private watcher?: fs.FSWatcher;
   private timer?: ReturnType<typeof setTimeout>;
   private scheduledAt = 0;
@@ -217,6 +251,20 @@ export class ProjectSync {
   private failures = 0;
   private retryAt = 0;
   private current: ProjectStatus = { state: 'Starting', files: 0, conflicts: 0 };
+  private names?: { at: number; map: Map<string, string> };
+  private channel?: EventChannel;
+  private link: LinkState = 'degraded';
+  private pushing = false;
+  private commit: 'unknown' | 'v1' | 'legacy' = 'unknown';
+  private features = new Set<string>();
+  private chunkBytes = DEFAULT_CHUNK_BYTES;
+  private chunkConcurrency = 1;
+  private partRetry = 1;
+  private lastSeq = 0;
+  private pendingSeq = 0;
+  private fullRequested = false;
+  /** 首次全量对齐完成前，任何增量都必须让位给整轮清单（否则会拿空 checkout 去判断冲突）。 */
+  private primed = false;
 
   constructor(private readonly options: ProjectOptions) {
     if (!lstat(options.root)?.isDirectory()) throw new Error('请选择真实的本地工作区目录。');
@@ -233,6 +281,7 @@ export class ProjectSync {
       if (!/^[a-f0-9]{64}\.json$/.test(filename)) continue;
       const state = JSON.parse(fs.readFileSync(path.join(this.checkoutDir, filename), 'utf8')) as Checkout;
       const row = state.base?.row ?? state.intent?.after.row;
+      if (isRevision(row) && isOfficeOwnerFile(path.posix.basename(row.path))) continue;
       if (!row || !isRevision(row) || filename !== hash(keyFor(row.path)) + '.json'
         || (state.intent && (!isRevision(state.intent.after.row) || keyFor(state.intent.after.row.path) !== keyFor(row.path)
           || (state.intent.after.row.sha256 !== null && !UUID.test(state.intent.payload ?? ''))))
@@ -243,6 +292,7 @@ export class ProjectSync {
       }
       this.checkouts.set(keyFor(row.path), state);
     }
+    this.lastSeq = this.loadSequence();
   }
 
   status(): ProjectStatus {
@@ -284,17 +334,34 @@ export class ProjectSync {
     this.started = true;
     try {
       this.watcher = fs.watch(this.root, { recursive: true }, (_event, filename) => {
-        if (!filename || isProjectPath(filename.split(path.sep).join('/'))) this.wake();
+        if (!filename || isProjectPath(filename.split(path.sep).join('/')) || isOfficeOwnerFile(path.basename(filename))) {
+          this.wake();
+        }
       });
       this.watcher.on('error', () => this.watcher?.close());
     } catch {
       // Periodic reconciliation still catches external changes when watch is unavailable.
     }
+    // 推送通道只决定「多久发现变化」：它一旦不可用就按 0.2 的节奏轮询（§6.4/§9）。
+    this.channel = new EventChannel({
+      endpoint: this.options.endpoint,
+      workspaceId: this.options.workspaceId,
+      token: this.options.token,
+      lastSeq: this.lastSeq,
+      onChanges: (seq, changes) => this.receiveChanges(seq, changes),
+      onReset: head => this.receiveReset(head),
+      onState: (state, detail) => this.receiveState(state, detail),
+      onSeq: seq => this.advanceSeq(seq),
+      onCapabilities: capabilities => this.receiveCapabilities(capabilities),
+    });
+    this.channel.start();
     this.schedule(0);
   }
 
   wake(): void {
     if (!this.started || this.lifetime.signal.aborted) return;
+    // 本地编辑（watcher / 编辑器事件）会让本地状态偏离快照，必须整轮对齐。
+    this.fullRequested = true;
     if (this.running) {
       this.awakened = true;
     } else {
@@ -305,6 +372,8 @@ export class ProjectSync {
   dispose(): void {
     this.lifetime.abort();
     clearTimeout(this.timer);
+    this.channel?.stop();
+    this.channel = undefined;
     this.watcher?.close();
     this.current = { ...this.current, state: 'Disconnected' };
   }
@@ -318,7 +387,7 @@ export class ProjectSync {
     this.scheduledAt = at;
     this.timer = setTimeout(() => {
       this.timer = undefined;
-      void this.reconcile();
+      void this.pump();
     }, at - now);
   }
 
@@ -341,10 +410,9 @@ export class ProjectSync {
     return url;
   }
 
-  private async request(url: URL, init: RequestInit = {}): Promise<Response> {
-    let response: Response;
+  private async send(url: URL, init: RequestInit = {}): Promise<Response> {
     try {
-      response = await fetch(url, {
+      return await fetch(url, {
         ...init,
         headers: { ...init.headers, Authorization: 'Bearer ' + this.options.token },
         redirect: 'error',
@@ -353,6 +421,10 @@ export class ProjectSync {
     } catch {
       throw new Offline('协作服务器暂不可用，本地文件会保留并自动重试。');
     }
+  }
+
+  private async request(url: URL, init: RequestInit = {}): Promise<Response> {
+    const response = await this.send(url, init);
     if (response.ok) return response;
     await response.body?.cancel();
     if (response.status === 412) throw new Retry();
@@ -363,8 +435,10 @@ export class ProjectSync {
     throw new Error('协作服务器拒绝了文件同步（HTTP ' + response.status + '）。');
   }
 
-  private async manifest(): Promise<Map<string, FileRevision>> {
+  private async manifest(): Promise<{ files: Map<string, FileRevision>; seq: number | undefined }> {
     const response = await this.request(this.url());
+    // §3.2：v1 在响应头带 `X-LSW-Seq`；0.2 没有这个头（undefined → 水位保持不变）。
+    const header = response.headers.get('x-lsw-seq');
     const data: unknown = await response.json();
     const files = (data as { files?: unknown } | null)?.files;
     if (!Array.isArray(files) || files.length > MANIFEST_LIMIT) throw new Error('服务器文件列表无效。');
@@ -376,11 +450,66 @@ export class ProjectSync {
       if (result.has(key)) throw new Error('服务器返回了重复的文件路径。');
       result.set(key, row);
     }
-    return result;
+    const seq = header !== null && /^(?:0|[1-9][0-9]{0,15})$/.test(header.trim()) ? Number(header.trim()) : undefined;
+    return { files: result, seq: seq !== undefined && Number.isSafeInteger(seq) ? seq : undefined };
   }
 
   private async download(row: FileRevision): Promise<Buffer | undefined> {
     if (row.sha256 === null) return;
+    if (this.features.has('range') && row.size >= RANGE_RESUME_THRESHOLD) return this.downloadRanged(row);
+    return this.downloadFull(row);
+  }
+
+  /**
+   * §4 大文件下载：先取前缀，丢包后用 `Range: bytes=<已收>-` 续传，
+   * 最后仍按**整文件** sha256 校验（Range 只省流量，不降低校验强度）。
+   */
+  private async downloadRanged(row: FileRevision): Promise<Buffer> {
+    const bytes = Buffer.alloc(row.size);
+    let offset = 0;
+    let failures = 0;
+    while (offset < row.size) {
+      if (this.lifetime.signal.aborted) throw new Retry();
+      const headers: Record<string, string> = {};
+      const range = rangeHeader(offset);
+      if (range) headers.Range = range;
+      let response: Response;
+      try {
+        response = await this.request(this.url(row.path, row.revision), { headers });
+      } catch (error) {
+        if (error instanceof Offline && failures < RANGE_RETRIES) {
+          failures++;
+          await this.delay(200 * failures);
+          continue;
+        }
+        throw error;
+      }
+      if (!response.body) throw new Error('服务器未返回文件内容。');
+      const plan = planRangeResponse(offset, row.size, response.status, parseContentRange(response.headers.get('content-range')));
+      let cursor = plan.start;
+      const reader = response.body.getReader();
+      try {
+        for (;;) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          if (cursor + value.length > row.size) throw new Error('服务器返回了超出预期大小的文件。');
+          bytes.set(value, cursor);
+          cursor += value.length;
+        }
+      } finally {
+        await reader.cancel().catch(() => {});
+        reader.releaseLock();
+      }
+      const next = Math.max(offset, cursor);
+      if (next <= offset) throw new Error('服务器没有返回新的文件字节。');
+      offset = next;
+      failures = 0;
+    }
+    if (hash(bytes) !== row.sha256) throw new Error('下载的文件校验失败。');
+    return bytes;
+  }
+
+  private async downloadFull(row: FileRevision): Promise<Buffer> {
     const response = await this.request(this.url(row.path, row.revision));
     const length = response.headers.get('content-length');
     if (length !== null && Number(length) !== row.size) {
@@ -407,18 +536,251 @@ export class ProjectSync {
     return bytes;
   }
 
+  /**
+   * 上传入口：v1 提交（含分片）优先，任何「服务端没这个接口」都退回 0.2 的
+   * `PUT /workspace/file`，绝不让版本差异吃掉用户的文件。
+   */
   private async upload(relative: string, before: FileRevision | undefined, bytes: Buffer | undefined): Promise<FileRevision> {
+    const base = before?.revision ?? 0;
+    if (this.commit === 'v1') {
+      try {
+        const committed = await this.commitV1(relative, base, bytes);
+        if (committed !== undefined) return this.receipt(committed, relative, base, bytes);
+      } catch (error) {
+        if (!(error instanceof Unsupported)) throw error;
+        this.commit = 'legacy';
+      }
+    }
+    return this.receipt(await this.commitLegacy(relative, before, bytes), relative, base, bytes);
+  }
+
+  /** 文件级版本双校验：回执的 path/revision/sha256/size 必须与本地提交完全一致。 */
+  private receipt(row: unknown, relative: string, base: number, bytes: Buffer | undefined): FileRevision {
+    if (!isRevision(row) || keyFor(row.path) !== keyFor(relative) || row.revision < base
+      || row.sha256 !== (bytes === undefined ? null : hash(bytes)) || row.size !== (bytes?.length ?? 0)) {
+      throw new Error('服务器的保存回执与写入文件不一致。');
+    }
+    return row;
+  }
+
+  private async commitLegacy(relative: string, before: FileRevision | undefined, bytes: Buffer | undefined): Promise<unknown> {
     const response = await this.request(this.url(before?.path ?? relative), {
       method: bytes === undefined ? 'DELETE' : 'PUT',
       headers: { 'If-Match': '"' + (before?.revision ?? 0) + '"', 'Content-Type': 'application/octet-stream' },
       body: bytes === undefined ? undefined : new Uint8Array(bytes),
     });
-    const row: unknown = await response.json();
-    if (!isRevision(row) || keyFor(row.path) !== keyFor(relative) || row.revision < (before?.revision ?? 0)
-      || row.sha256 !== (bytes === undefined ? null : hash(bytes)) || row.size !== (bytes?.length ?? 0)) {
-      throw new Error('服务器的保存回执与写入文件不一致。');
+    return await response.json();
+  }
+
+  /** §4.1 幂等提交；返回 `undefined` 表示服务端没有这个接口（调用方回退 0.2）。 */
+  private async commitV1(relative: string, base: number, bytes: Buffer | undefined): Promise<unknown | undefined> {
+    if (bytes !== undefined && bytes.length >= CHUNKED_UPLOAD_THRESHOLD && this.features.has('chunked-upload')) {
+      try {
+        return await this.uploadChunked(relative, base, bytes);
+      } catch (error) {
+        if (!(error instanceof Unsupported)) throw error;
+        // 分片通道缺失 → 摘掉该 feature，本次就用整文件 commit。
+        this.features.delete('chunked-upload');
+      }
     }
-    return row;
+    const url = new URL('/v1/workspace/commit', this.options.endpoint);
+    url.searchParams.set('workspace', this.options.workspaceId);
+    url.searchParams.set('path', relative);
+    if (bytes === undefined) url.searchParams.set('delete', '1');
+    const response = await this.send(url, {
+      method: 'POST',
+      headers: {
+        'If-Match': '"' + base + '"',
+        'Content-Type': 'application/octet-stream',
+        // 同一份内容 + 同一个 base 的重试落同一个 key：重放不会重复递增 revision/seq。
+        'Idempotency-Key': idempotencyKey('commit', this.options.workspaceId, keyFor(relative), String(base), bytes === undefined ? 'delete' : hash(bytes)),
+      },
+      body: bytes === undefined ? undefined : new Uint8Array(bytes),
+    });
+    if (!response.ok) await this.failure(response, '提交接口');
+    const data: unknown = await response.json();
+    const file = (data as { file?: unknown } | null)?.file;
+    return file ?? data;
+  }
+
+  /**
+   * §5 分片断点续传：`POST /v1/upload` → 并发 `PUT ?offset=`（并发/单块重试取服务端策略）
+   * → `finish`。续传点优先用 `received` 判定缺块，失败按 offset 续。
+   */
+  private async uploadChunked(relative: string, base: number, bytes: Buffer): Promise<unknown> {
+    const digest = hash(bytes);
+    const key = uploadSessionKey(this.options.workspaceId, relative, bytes.length, digest, base);
+    let session = this.uploads.get(key);
+    if (session) {
+      const recovered = await this.uploadResume(key, bytes.length, digest);
+      if (recovered === undefined) session = undefined;
+      else session.offset = recovered;
+    }
+    if (!session) {
+      const created = await this.createUpload(relative, bytes.length, digest, base);
+      session = { id: created.id, offset: created.offset, chunkBytes: created.chunkBytes };
+      this.uploads.set(key, session);
+    }
+    await this.uploadParts(session, bytes, digest);
+    return await this.finishUpload(session.id, key);
+  }
+
+  /** 崩溃恢复：`GET /v1/upload/<id>` 的 `received` 优先，`offset` 只作提示。 */
+  private async uploadResume(key: string, size: number, sha256: string): Promise<number | undefined> {
+    const session = this.uploads.get(key);
+    if (!session) return undefined;
+    const url = new URL('/v1/upload/' + encodeURIComponent(session.id), this.options.endpoint);
+    const response = await this.send(url, { method: 'GET' });
+    if (!response.ok) {
+      await response.body?.cancel();
+      this.uploads.delete(key);
+      return undefined;
+    }
+    const data = await response.json() as { size?: unknown; sha256?: unknown; offset?: unknown; received?: unknown } | null;
+    if (data?.size !== undefined && Number(data.size) !== size) {
+      this.uploads.delete(key);
+      return undefined;
+    }
+    if (typeof data?.sha256 === 'string' && data.sha256 !== sha256) {
+      this.uploads.delete(key);
+      return undefined;
+    }
+    return resumeOffsetFromReceived(data?.received, size, data?.offset);
+  }
+
+  private async createUpload(
+    relative: string, size: number, sha256: string, base: number,
+  ): Promise<{ id: string; offset: number; chunkBytes: number }> {
+    const url = new URL('/v1/upload', this.options.endpoint);
+    url.searchParams.set('workspace', this.options.workspaceId);
+    url.searchParams.set('path', relative);
+    url.searchParams.set('size', String(size));
+    url.searchParams.set('sha256', sha256);
+    url.searchParams.set('base', String(base));
+    const response = await this.send(url, { method: 'POST' });
+    if (!response.ok) await this.failure(response, '分片上传接口');
+    const data: unknown = await response.json();
+    const raw = data as { upload?: unknown; offset?: unknown; chunkBytes?: unknown; received?: unknown } | null;
+    if (typeof raw?.upload !== 'string' || !raw.upload) throw new Error('服务器未返回分片上传会话。');
+    return {
+      id: raw.upload,
+      offset: resumeOffsetFromReceived(raw.received, size, raw.offset),
+      chunkBytes: normalizeChunkBytes(raw.chunkBytes ?? this.chunkBytes),
+    };
+  }
+
+  /**
+   * 按 `maxChunkConcurrency` 并发推送分片，每片最多 `partRetry` 次。
+   * 一旦服务端返回 409（只接受顺序块）就收敛为 1 并发并跳到 `expected`，避免互相踩踏。
+   */
+  private async uploadParts(session: { id: string; offset: number; chunkBytes: number }, bytes: Buffer, digest: string): Promise<void> {
+    let cursor = session.offset;
+    let window = Math.max(1, Math.min(this.chunkConcurrency, Math.ceil(bytes.length / session.chunkBytes) || 1));
+    while (cursor < bytes.length) {
+      if (this.lifetime.signal.aborted) throw new Retry();
+      const offsets: number[] = [];
+      for (let index = 0; index < window; index++) {
+        const offset = cursor + index * session.chunkBytes;
+        if (offset >= bytes.length) break;
+        offsets.push(offset);
+      }
+      const results = await Promise.all(offsets.map(offset => this.putPart(session, bytes, offset)));
+      const mismatch = results.find(result => result.expected !== undefined);
+      if (mismatch) {
+        window = 1;
+        cursor = mismatch.expected!;
+        continue;
+      }
+      const advanced = Math.max(...results.map(result => result.offset));
+      if (advanced <= cursor) throw new Error('服务器分片上传没有推进偏移。');
+      cursor = advanced;
+      session.offset = cursor;
+    }
+    if (hash(bytes) !== digest) throw new Error('上传内容在搬运过程中被改动。');
+  }
+
+  private async putPart(
+    session: { id: string; chunkBytes: number }, bytes: Buffer, offset: number,
+  ): Promise<{ offset: number; expected?: number }> {
+    let failures = 0;
+    for (;;) {
+      const plan = nextChunk(bytes.length, session.chunkBytes, offset);
+      if (!plan) return { offset: bytes.length };
+      const url = new URL('/v1/upload/' + encodeURIComponent(session.id), this.options.endpoint);
+      url.searchParams.set('offset', String(plan.offset));
+      let response: Response;
+      try {
+        response = await this.send(url, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/octet-stream' },
+          body: new Uint8Array(bytes.subarray(plan.offset, plan.offset + plan.length)),
+        });
+      } catch (error) {
+        if (error instanceof Offline && failures < this.partRetry) {
+          failures++;
+          await this.delay(250 * failures);
+          continue;
+        }
+        throw error;
+      }
+      if (response.status === 409) {
+        // 服务端只接受顺序块：跟着 `expected` 走，交给调度器收敛并发。
+        const data = await response.json().catch(() => undefined) as { expected?: unknown } | undefined;
+        const expected = data?.expected;
+        if (typeof expected !== 'number' || !Number.isSafeInteger(expected) || expected < 0 || expected > bytes.length) {
+          // 没有可信的期望偏移 → 不能瞎重发（否则原地死循环）。
+          throw new Error('分片上传偏移冲突，但服务端没有给出可用的期望偏移。');
+        }
+        return { offset: plan.offset, expected };
+      }
+      if (!response.ok) await this.failure(response, '分片上传接口');
+      const data = await response.json().catch(() => undefined) as { offset?: unknown } | undefined;
+      return { offset: pickUploadOffset([data?.offset], bytes.length) };
+    }
+  }
+
+  private async finishUpload(id: string, key: string): Promise<unknown> {
+    const url = new URL('/v1/upload/' + encodeURIComponent(id) + '/finish', this.options.endpoint);
+    const response = await this.send(url, {
+      method: 'POST',
+      // finish 就是一次 commit：同样带幂等键，重试不会把 revision/seq 再加一次。
+      headers: { 'Idempotency-Key': idempotencyKey('finish', this.options.workspaceId, key) },
+    });
+    if (response.status === 422) {
+      await response.body?.cancel();
+      // 坏块：丢掉会话，下一轮内核会用新会话重传（会话本身保留在服务端允许重试）。
+      this.uploads.delete(key);
+      throw new Retry();
+    }
+    if (!response.ok) await this.failure(response, '分片上传接口');
+    const data: unknown = await response.json();
+    this.uploads.delete(key);
+    const file = (data as { file?: unknown } | null)?.file;
+    return file ?? data;
+  }
+
+  /** v1 接口的状态码 → 本地语义（404/405/501 判为「没有这个接口」而不是错误）。 */
+  private async failure(response: Response, reason: string): Promise<never> {
+    await response.body?.cancel();
+    if (response.status === 412) throw new Retry();
+    if (response.status === 410) {
+      this.uploads.clear();
+      throw new Retry();
+    }
+    if (response.status === 401 || response.status === 403) throw new Error('共享工作区令牌未通过验证。');
+    if (response.status === 409) throw new Error('共享工作区路径冲突：该路径与已有文件大小写或父子关系冲突。');
+    if (response.status === 413) throw new Error('文件超过协作服务器允许的上限。');
+    if (response.status === 428) throw new Error('协作服务器要求先取到文件版本再提交。');
+    if (response.status === 507) throw new Error('共享工作区已达到容量上限。');
+    if (response.status >= 500) throw new Offline('协作服务器暂不可用，本地文件会保留并自动重试。');
+    if (response.status === 404 || response.status === 405 || response.status === 501) {
+      throw new Unsupported(reason + '不可用。');
+    }
+    throw new Error('协作服务器拒绝了文件同步（HTTP ' + response.status + '）。');
+  }
+
+  private delay(ms: number): Promise<void> {
+    return new Promise(resolve => setTimeout(resolve, Math.max(0, ms)));
   }
 
   private scan(): Map<string, string> {
@@ -529,24 +891,27 @@ export class ProjectSync {
     return intent;
   }
 
-  private project(key: string, relative: string, intent: Projection): void {
+  private project(key: string, relative: string, intent: Projection): boolean {
     if (this.lifetime.signal.aborted || this.options.isDirty(relative) || this.inspect(relative, false).sha256 !== intent.before) {
       throw new Retry();
     }
+    const file = this.localPath(relative, intent.payload !== undefined);
+    const target = lstat(file);
+    if (target && (target.isSymbolicLink() || !target.isFile())) {
+      throw new Error('本地目录或链接挡住了共享文件：' + relative);
+    }
+    if (hasOfficeOwnerFile(file)) return false;
     const bytes = intent.payload === undefined ? undefined : fs.readFileSync(path.join(this.checkoutDir, intent.payload + '.project'));
     const { row } = intent.after;
     if ((bytes === undefined ? null : hash(bytes)) !== row.sha256 || (bytes?.length ?? 0) !== row.size) {
       throw new Error('本地同步暂存文件校验失败。');
     }
-    const file = this.localPath(relative, bytes !== undefined);
-    const target = lstat(file);
-    if (target && (target.isSymbolicLink() || !target.isFile())) {
-      throw new Error('本地目录或链接挡住了共享文件：' + relative);
-    }
     if (bytes !== undefined) writeAtomic(file, bytes);
     else if (target) fs.unlinkSync(file);
     this.fingerprints.delete(relative);
+    this.names = undefined;
     this.save(key, { base: intent.after });
+    return true;
   }
 
   private saveConflict(key: string, relative: string, local: LocalFile, state: Checkout, row: FileRevision, remote: Buffer | undefined): void {
@@ -577,6 +942,9 @@ export class ProjectSync {
   private async reconcileFile(key: string, relative: string, remote: FileRevision | undefined): Promise<boolean> {
     if (this.options.isDirty(relative)) return false;
     const local = this.inspect(relative);
+    if (local.sha256 === null && isOfficeDocument(relative) && hasOfficeOwnerFile(this.localPath(relative))) {
+      return false;
+    }
     if (local.sha256 !== null) this.missingSince.delete(key);
     let state = this.checkouts.get(key) ?? {};
     if (state.intent) {
@@ -585,8 +953,7 @@ export class ProjectSync {
         state = { base: after };
         this.save(key, state);
       } else if (local.sha256 === before && remote) {
-        this.project(key, relative, state.intent);
-        return sameRevision(after.row, remote);
+        return this.project(key, relative, state.intent) && sameRevision(after.row, remote);
       } else if (remote) {
         const bytes = await this.download(remote);
         this.saveConflict(key, relative, local, state, remote, bytes);
@@ -617,7 +984,10 @@ export class ProjectSync {
       if (local.sha256 === null && remote?.sha256 && !state.resolution) {
         const since = this.missingSince.get(key);
         if (since === undefined) this.missingSince.set(key, Date.now());
-        if (since === undefined || Date.now() - since < 250) return false;
+        if (since === undefined || Date.now() - since < 250) {
+          this.wake();
+          return false;
+        }
       }
       const bytes = this.readLocal(relative, local);
       const row = await this.upload(relative, remote, bytes);
@@ -632,8 +1002,7 @@ export class ProjectSync {
       const bytes = await this.download(remote);
       if (this.lifetime.signal.aborted) return false;
       const intent = this.stageProjection(key, state, local, this.version(remote, bytes), bytes);
-      this.project(key, relative, intent);
-      return true;
+      return this.project(key, relative, intent);
     }
 
     const shared = await this.download(remote);
@@ -651,8 +1020,7 @@ export class ProjectSync {
     const row = await this.upload(relative, remote, merged);
     if (this.lifetime.signal.aborted) return false;
     const intent = this.stageProjection(key, state, local, this.version(row, merged), merged);
-    this.project(key, relative, intent);
-    return true;
+    return this.project(key, relative, intent);
   }
 
   private async reconcile(): Promise<void> {
@@ -660,8 +1028,10 @@ export class ProjectSync {
     this.running = true;
     this.awakened = false;
     try {
-      const remote = await this.manifest();
+      const { files: remote, seq } = await this.manifest();
       if (this.lifetime.signal.aborted) return;
+      // 快照之后才收到的增量必须留着：它们比这次 manifest 新。
+      this.carry(remote);
       const local = this.scan();
       const keys = new Set([...local.keys(), ...remote.keys(), ...this.checkouts.keys()]);
       let settled = true;
@@ -684,16 +1054,228 @@ export class ProjectSync {
       }
       this.failures = 0;
       this.retryAt = 0;
+      // §3.2：全量对齐完成 → 把水位校准到响应头里的 head。
+      this.advanceSeq(seq);
+      this.primed = true;
       const conflicts = [...this.checkouts.values()].filter(item => item.conflict).length;
       const files = [...remote.values()].filter(row => row.sha256 !== null).length;
       this.publish(firstError ? 'Error' : conflicts ? 'Conflict' : settled ? 'Saved' : 'Syncing', files, firstError);
     } catch (error) {
       this.failures++;
       this.retryAt = Date.now() + Math.min(5000, POLL_MS * 2 ** this.failures);
-      this.publish(error instanceof Offline ? 'Offline' : 'Error', this.current.files, errorMessage(error));
+      const offline = error instanceof Offline;
+      this.publish(offline && this.pushing ? 'Reconnecting' : offline ? 'Offline' : 'Error',
+        this.current.files, errorMessage(error));
     } finally {
       this.running = false;
-      this.schedule(this.awakened ? DEBOUNCE_MS : POLL_MS);
+      this.schedule(this.awakened ? DEBOUNCE_MS : this.pollDelay());
+    }
+  }
+
+  /** 定时/推送的统一入口：有明确的全量请求就跑整轮，否则只应用增量。 */
+  private async pump(): Promise<void> {
+    if (this.lifetime.signal.aborted) return;
+    if (!this.primed || this.fullRequested || !this.pending.size) {
+      this.fullRequested = false;
+      await this.reconcile();
+      if (this.pending.size) this.schedule(PENDING_RETRY_MS, true);
+      return;
+    }
+    await this.applyPending();
+  }
+
+  /**
+   * 只对推送涉及的 path 调 `reconcileFile`（不再整轮拉清单）。
+   * 校验强度与全量路径完全一致：走的还是同一个 reconciler。
+   */
+  private async applyPending(): Promise<void> {
+    if (this.running || this.lifetime.signal.aborted) return;
+    this.running = true;
+    this.awakened = false;
+    const batch = [...this.pending];
+    this.pending.clear();
+    const seq = this.pendingSeq;
+    this.pendingSeq = 0;
+    const requeue: Array<[string, FileRevision]> = [];
+    let settled = true;
+    let firstError: string | undefined;
+    try {
+      const names = this.localNames();
+      for (let index = 0; index < batch.length; index++) {
+        if (this.lifetime.signal.aborted) return;
+        const [key, row] = batch[index];
+        const relative = names.get(key) ?? row.path;
+        try {
+          if (this.redundant(key, row)) continue;
+          if (!await this.reconcileFile(key, relative, row)) settled = false;
+        } catch (error) {
+          if (error instanceof Offline || error instanceof Retry) {
+            // 未应用的项留在队列里，本轮结束后立刻重排；水位照常推进（不丢工作量）。
+            requeue.push(...batch.slice(index));
+            if (error instanceof Offline) throw error;
+            settled = false;
+            break;
+          }
+          firstError ??= relative + '：' + errorMessage(error);
+        }
+      }
+      this.failures = 0;
+      this.retryAt = 0;
+      const conflicts = [...this.checkouts.values()].filter(item => item.conflict).length;
+      this.publish(firstError ? 'Error' : conflicts ? 'Conflict' : settled ? 'Saved' : 'Syncing', this.current.files, firstError);
+    } catch (error) {
+      const offline = error instanceof Offline;
+      if (!offline) {
+        this.failures++;
+        this.retryAt = Date.now() + PENDING_RETRY_MS;
+      }
+      this.publish(offline && this.pushing ? 'Reconnecting' : offline ? 'Offline' : 'Error',
+        this.current.files, errorMessage(error));
+    } finally {
+      for (const [key, row] of requeue) this.pending.set(key, row);
+      this.running = false;
+      if (this.pending.size) this.schedule(PENDING_RETRY_MS, true);
+      else this.schedule(this.awakened ? DEBOUNCE_MS : this.pollDelay());
+      // 已应用（或已回队）完毕才确认水位：崩溃时服务端会从旧水位重放，redundant() 会过滤重复。
+      if (seq > 0) this.channel?.confirm(seq);
+    }
+  }
+
+  /** 推送来的增量：只记录相关 path，不立刻整轮重建。 */
+  private receiveChanges(seq: number, changes: RemoteChange[]): void {
+    if (this.lifetime.signal.aborted || !this.started) return;
+    let rebuild = false;
+    for (const change of changes) {
+      if (!isProjectPath(change.path)) continue;
+      const row = this.changeRow(change);
+      if (!row || this.pending.size >= MANIFEST_LIMIT) {
+        // 事件本身不自洽（或攒得太多）→ 退回整轮清单，绝不做半套应用。
+        rebuild = true;
+        break;
+      }
+      this.pending.set(keyFor(change.path), row);
+    }
+    if (rebuild) {
+      this.fullRequested = true;
+      this.pending.clear();
+      this.pendingSeq = 0;
+    } else {
+      this.pendingSeq = Math.max(this.pendingSeq, seq);
+    }
+    if (this.running) this.awakened = true;
+    else this.schedule(DEBOUNCE_MS, true);
+  }
+
+  /** §3.1/§6：日志不覆盖 since 或序号缺口 → 整轮 manifest 重建。 */
+  private receiveReset(head: number): void {
+    if (this.lifetime.signal.aborted) return;
+    this.pending.clear();
+    this.pendingSeq = 0;
+    this.fullRequested = true;
+    // 先把水位对齐到服务端 head，避免重连又索要已被裁剪的区间；全量对齐后会再用响应头校准。
+    this.setSeq(head);
+    if (this.running) this.awakened = true;
+    else this.schedule(0);
+  }
+
+  /** 链路状态 → 状态栏（推送模式下断线是「重连中」，不是「离线可编辑」）。 */
+  private receiveState(state: LinkState, detail?: string): void {
+    this.link = state;
+    this.pushing = this.channel?.isPushing() ?? false;
+    if (this.lifetime.signal.aborted) return;
+    if (state === 'offline' && this.pushing) {
+      if (this.current.state === 'Error' || this.current.state === 'Conflict') return;
+      this.publish('Reconnecting', this.current.files, detail ?? '与协作服务器的连接中断，正在自动重连。');
+      return;
+    }
+    if (state === 'online' && this.current.state === 'Reconnecting') {
+      this.publish('Syncing', this.current.files);
+    }
+  }
+
+  /** `/v1/config` 成功 → 启用 v1 提交/分片/Range，并采用服务端的分片策略。 */
+  private receiveCapabilities(capabilities: Capabilities): void {
+    this.features = new Set(capabilities.features);
+    this.chunkBytes = capabilities.chunkBytes;
+    this.chunkConcurrency = capabilities.maxChunkConcurrency;
+    this.partRetry = capabilities.partRetry;
+    this.commit = 'v1';
+  }
+
+  /** 删除事件的等价物是 0.2 的墓碑行（sha256=null/size=0），reconciler 已能处理。 */
+  private changeRow(change: RemoteChange): FileRevision | undefined {
+    const row: FileRevision = change.deleted
+      ? { path: change.path, revision: change.revision, sha256: null, size: 0 }
+      : { path: change.path, revision: change.revision, sha256: change.sha256, size: change.size };
+    return isRevision(row) ? row : undefined;
+  }
+
+  /** 重复投递/过期事件：快照已经比它新，直接跳过（不算失败，也不报错）。 */
+  private redundant(key: string, row: FileRevision): boolean {
+    const base = this.checkouts.get(key)?.base?.row;
+    if (!base) return false;
+    if (row.revision < base.revision) return true;
+    return row.revision === base.revision && row.sha256 === base.sha256;
+  }
+
+  /** 全量快照之后仍比快照新的增量保留下来（其余由快照覆盖）。 */
+  private carry(remote: Map<string, FileRevision>): void {
+    if (!this.pending.size) return;
+    const late = new Map<string, FileRevision>();
+    for (const [key, row] of this.pending) {
+      const snapshot = remote.get(key);
+      if (!snapshot || row.revision > snapshot.revision) late.set(key, row);
+    }
+    this.pending.clear();
+    for (const [key, row] of late) this.pending.set(key, row);
+  }
+
+  /** 增量路径需要的本地文件名（大小写不敏感平台要保住磁盘上的原始大小写）。 */
+  private localNames(): Map<string, string> {
+    const now = Date.now();
+    if (this.names && now - this.names.at < 1000) return this.names.map;
+    let map: Map<string, string>;
+    try {
+      map = this.scan();
+    } catch {
+      map = new Map();
+    }
+    this.names = { at: now, map };
+    return map;
+  }
+
+  /** 推送可用时用兜底全量自证；降级时回到 0.2 的节奏（loopback 650 ms / 远程 3000 ms）。 */
+  private pollDelay(): number {
+    return this.pushing ? SAFETY_POLL_MS : fallbackPollMs(isLoopbackEndpoint(this.options.endpoint));
+  }
+
+  private setSeq(seq: number): void {
+    if (!Number.isSafeInteger(seq) || seq < 0 || seq === this.lastSeq) return;
+    this.lastSeq = seq;
+    this.channel?.setSeq(seq);
+    this.persistSequence(seq);
+  }
+
+  private advanceSeq(seq: number | undefined): void {
+    if (typeof seq !== 'number' || !Number.isSafeInteger(seq) || seq <= this.lastSeq) return;
+    this.setSeq(seq);
+  }
+
+  /** §6.6：水位与 `base.row.revision` 同目录落盘，重启后从它续传。 */
+  private persistSequence(seq: number): void {
+    try {
+      writeAtomic(path.join(this.checkoutDir, SEQUENCE_FILE), JSON.stringify({ seq, at: new Date().toISOString() }));
+    } catch {
+      // 水位只是重连起点：写失败不影响本轮同步，下次全量对齐会重新校准。
+    }
+  }
+
+  private loadSequence(): number {
+    try {
+      const raw = JSON.parse(fs.readFileSync(path.join(this.checkoutDir, SEQUENCE_FILE), 'utf8')) as { seq?: unknown };
+      return Number.isSafeInteger(raw.seq) && (raw.seq as number) >= 0 ? (raw.seq as number) : 0;
+    } catch {
+      return 0;
     }
   }
 }

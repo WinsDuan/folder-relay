@@ -130,7 +130,7 @@ try {
   await wait('seeded-a');
   const manifest = await (await request('manifest')).json();
   assert.deepEqual(manifest.files.filter(file => file.sha256 !== null).map(file => file.path).sort(), [
-    'chapters/model.tex', 'figures/model.png', 'main.tex', 'references.bib',
+    'chapters/model.tex', 'figures/model.png', 'main.tex', 'office/budget.xlsx', 'references.bib',
   ]);
 
   const firstPeer = launch('b', 'initial');
@@ -165,6 +165,7 @@ try {
   assert.equal(finalRows.get('figures/model.png')?.sha256, owner.imageDigest);
   assert.equal(finalRows.get('chapters/notes.tex')?.sha256, null);
   assert.equal(finalRows.get('chapters/notes-final.tex')?.sha256, null);
+  assert.equal(finalRows.has('office/~$dget.xlsx'), false);
   const sharedModel = await request('file', { path: 'chapters/model.tex', revision: String(finalRows.get('chapters/model.tex').revision) });
   assert.equal((await sharedModel.text()).replace(/\r\n/g, '\n'), owner.model);
 
@@ -184,6 +185,7 @@ try {
     automaticReconnection: owner.reconnected && peer.reconnected,
     nonOverlappingEditsMerged: true,
     binaryConflictPreserved: peer.binaryConflictPreserved,
+    officeUpdateDeferredWhileOpenAndSavedBack: true,
     createRenameDeleteWhileConflict: owner.fileTreeSynced && peer.fileTreeSynced,
   };
   const json = JSON.stringify(evidence, null, 2) + '\n';

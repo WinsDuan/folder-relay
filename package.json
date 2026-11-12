@@ -1,6 +1,6 @@
 {
   "name": "lsw-monorepo",
-  "version": "0.2.0",
+  "version": "0.3.2",
   "private": true,
   "license": "MIT",
   "description": "Folder Relay synchronizes local project folders for collaboration in VS Code.",
@@ -9,10 +9,15 @@
   "scripts": {
     "build": "npm run build --workspaces --if-present",
     "start": "npm run start -w @lsw/collab-server",
-    "test": "npm run test --workspaces --if-present && node --test tests/protocol.test.mjs",
+    "test": "npm run test --workspaces --if-present && node --test tests/protocol.test.mjs tests/remote-e2e.test.mjs",
+    "test:remote": "node --test tests/remote-e2e.test.mjs",
+    "test:clients": "node scripts/e2e-two-clients.mjs",
+    "bench:remote": "node scripts/bench-remote.mjs --self",
     "test:vscode": "npm run build && node tests/run-vscode.mjs",
     "test:project": "npm run build && node tests/run-project-vscode.mjs",
-    "package:vsix": "npm run package -w apps/vscode-extension"
+    "package:vsix": "npm run package -w apps/vscode-extension",
+    "deploy:verify": "node scripts/verify-caddy-proxy.mjs",
+    "deploy:cloud": "powershell -ExecutionPolicy Bypass -File infra/deploy/deploy.ps1 -Server $env:RELAY_SERVER"
   },
   "devDependencies": {
     "@hocuspocus/provider": "4.8.0",

@@ -12,6 +12,10 @@ Folder Relay was previously named LaTeX Sync Workspace. The extension keeps its 
 
 The project mode automatically saves eligible editor changes and synchronizes files written by external tools, including AI tools. Each member can edit and compile their own local copy when peers are offline. Disjoint text edits merge when the clients reconnect. Overlapping changes are kept for review while the rest of the project keeps syncing.
 
+## Office files
+
+Put Word, Excel, or PowerPoint files in a connected folder. Right-click a file in the VS Code Explorer and select **Folder Relay: 在办公应用中打开** to launch its default desktop app. Save the file in the same location to share the new version. Folder Relay syncs the entire document up to 16 MiB and preserves competing saved versions for review. If Office has the destination file open, close it to let Folder Relay apply the incoming update.
+
 ## Legacy single-file mode
 
 Open a local UTF-8 `.tex` file and run **LSW: Connect Single File (Legacy)**. Enter the server URL, document ID and workspace token. A mismatch requires confirmation and stores a local copy before the shared text is applied.

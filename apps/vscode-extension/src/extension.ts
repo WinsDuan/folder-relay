@@ -6,6 +6,8 @@ import WebSocket from 'ws';
 import * as Y from 'yjs';
 import * as vscode from 'vscode';
 import { canonical, EditorModel, patches } from './editor-model.js';
+import { normalizeJoinUrl } from './join-link.js';
+import { isOfficeDocument, isOfficeOwnerFile, OFFICE_EXTENSIONS } from './office-files.js';
 import { registerProjectCommands } from './project-session.js';
 
 const DEFAULT_URL = 'ws://127.0.0.1:1234';
@@ -52,16 +54,12 @@ function sha256(value: string | Uint8Array): string {
   return createHash('sha256').update(value).digest('hex');
 }
 
-function validateUrl(value: string): URL {
-  const url = new URL(value);
-  const loopback = ['127.0.0.1', 'localhost', '[::1]'].includes(url.hostname);
-  if (url.protocol !== 'wss:' && !(url.protocol === 'ws:' && loopback)) {
-    throw new Error('Use wss:// for a remote server or ws:// for a loopback server.');
-  }
-  if (url.username || url.password || url.search || url.hash) {
-    throw new Error('Use a server URL without credentials, a query string, or a fragment.');
-  }
-  return url;
+/**
+ * 地址校验统一走 join-link 的纯函数：`ws://` 只允许回环，
+ * 或者"私有网段 + 用户显式勾选了局域网明文"（同一 WiFi 里直连、没有 TLS）。
+ */
+function validateUrl(value: string, options: { allowInsecureLan?: boolean } = {}): URL {
+  return new URL(normalizeJoinUrl(value, options));
 }
 
 function showJoinEntry(bar: vscode.StatusBarItem): void {
@@ -678,6 +676,31 @@ export function activate(context: vscode.ExtensionContext) {
   context.subscriptions.push(
     bar,
     new vscode.Disposable(() => active?.dispose()),
+    // 一键加入链接（vscode://lsw-local.latex-sync-workspace/join?...）交给工作区连接逻辑处理。
+    vscode.window.registerUriHandler({ handleUri: uri => project.joinFromLink(uri) }),
+    vscode.commands.registerCommand('lsw.openOfficeFile', async (uri?: vscode.Uri) => {
+      try {
+        const file = uri ?? (await vscode.window.showOpenDialog({
+          defaultUri: vscode.workspace.workspaceFolders?.[0]?.uri,
+          canSelectMany: false,
+          filters: { Office: OFFICE_EXTENSIONS },
+          openLabel: '在办公应用中打开',
+        }))?.[0];
+        if (!file) return;
+        const name = path.basename(file.fsPath);
+        if (file.scheme !== 'file' || !vscode.workspace.getWorkspaceFolder(file)
+          || !isOfficeDocument(name) || isOfficeOwnerFile(name)) {
+          throw new Error('请选择工作区内的 Word、Excel 或 PowerPoint 本地文件。');
+        }
+        const stat = await vscode.workspace.fs.stat(file);
+        if (!(stat.type & vscode.FileType.File)) throw new Error('请选择一个办公文档。');
+        if (!await vscode.env.openExternal(file)) {
+          throw new Error('请为此格式设置系统默认的办公应用，再试一次。');
+        }
+      } catch (error) {
+        void vscode.window.showErrorMessage(error instanceof Error ? error.message : '无法打开办公文档。');
+      }
+    }),
     vscode.workspace.registerTextDocumentContentProvider(CONFLICT_SCHEME, {
       provideTextDocumentContent(uri) {
         const [id, file, ...rest] = uri.path.slice(1).split('/');

@@ -14,6 +14,11 @@ const run = promisify(execFile);
 const mainFile = 'main.tex';
 const modelFile = 'chapters/model.tex';
 const imageFile = 'figures/model.png';
+const officeFile = 'office/budget.xlsx';
+const officeOwnerFile = 'office/~$dget.xlsx';
+const officeInitial = Buffer.from([0x50, 0x4b, 0x03, 0x04, 0x01]);
+const officeUpdated = Buffer.concat([officeInitial, Buffer.from('saved by owner')]);
+const officeReturned = Buffer.concat([officeUpdated, Buffer.from('saved by peer')]);
 const notesFile = 'chapters/notes.tex';
 const renamedFile = 'chapters/notes-final.tex';
 const notesText = '% Created while a different file has a conflict.\n';
@@ -61,12 +66,12 @@ async function until(condition, description, timeout = 45_000) {
   const detail = current?.error ? ': ' + current.error : '';
   throw new Error(actor + ' (' + phase + ') timed out: ' + description + ' [' + current?.state + detail + ']');
 }
-async function waitState(state) {
+async function waitState(...states) {
   await until(async () => {
     const current = await status();
     if (current?.state === 'Error') throw new Error(current.error || 'Workspace sync error');
-    return current?.state === state;
-  }, 'sync status ' + state);
+    return states.includes(current?.state);
+  }, 'sync status ' + states.join(' or '));
 }
 
 async function main() {
@@ -97,6 +102,7 @@ async function main() {
     write(mainFile, source);
     write(modelFile, model);
     write(imageFile, image);
+    write(officeFile, officeInitial);
     write('references.bib', bibliography);
     write('main.aux', '% Build output stays local.\n');
   } else if (phase === 'initial') {
@@ -105,7 +111,7 @@ async function main() {
   }
   if (phase === 'reopened') {
     assert.ok(!process.env.LSW_PROJECT_TOKEN && !process.env.LSW_PROJECT_URL);
-    await waitState('Offline');
+    await waitState('Offline', 'Reconnecting');
     assert.equal(text(modelFile), afterExternal);
     assert.equal(text(mainFile), afterNative);
   } else {
@@ -120,6 +126,10 @@ async function main() {
   if (phase === 'owner') {
     publish('seeded-a');
     await until(() => read('hydrated-b'), 'empty checkout hydrated');
+    write(officeFile, officeUpdated);
+    await waitState('Saved');
+    await until(() => content(officeFile)?.equals(officeReturned), 'office save received from peer');
+    assert.equal(exists(officeOwnerFile), false);
     const mainEditor = await open(mainFile);
     await edit(mainEditor, afterNative);
     await until(() => text(mainFile) === afterNative && !mainEditor.document.isDirty, 'native autosave');
@@ -141,7 +151,7 @@ async function main() {
     }
     publish('solo-committed', { main: afterSolo, imageDigest: digest(imageA), compiled });
     await until(() => read('server-down'), 'server stopped');
-    await waitState('Offline');
+    await waitState('Offline', 'Reconnecting');
     write(modelFile, modelA);
     publish('offline-edit-a');
   } else if (phase === 'initial') {
@@ -149,7 +159,19 @@ async function main() {
       && text('references.bib') === bibliography && content(imageFile)?.equals(image), 'hydrate empty placeholder and missing files');
     assert.equal(exists('main.aux'), false);
     const mainEditor = await open(mainFile);
+    assert.deepEqual(content(officeFile), officeInitial);
+    write(officeOwnerFile, 'Office owner record');
     publish('hydrated-b', { emptyPlaceholderHydrated: true });
+    await waitState('Syncing');
+    assert.deepEqual(content(officeFile), officeInitial);
+    fs.renameSync(file(officeFile), file(officeFile + '.tmp'));
+    await delay(450);
+    assert.equal((await status()).state, 'Syncing');
+    fs.renameSync(file(officeFile + '.tmp'), file(officeFile));
+    fs.unlinkSync(file(officeOwnerFile));
+    await until(() => content(officeFile)?.equals(officeUpdated), 'office update applied after editor closed');
+    write(officeFile + '.tmp', officeReturned);
+    fs.renameSync(file(officeFile + '.tmp'), file(officeFile));
     await until(() => text(mainFile) === afterNative && normalize(mainEditor.document.getText()) === afterNative,
       'native edit updates another open editor and disk');
     write(modelFile, afterExternal);

@@ -4,6 +4,7 @@ import { createHash } from 'node:crypto';
 import * as vscode from 'vscode';
 import { openConnectionForm } from './connection-form.js';
 import { canonical } from './editor-model.js';
+import { buildJoinLink, endpointToJoinUrl, parseJoinLink } from './join-link.js';
 import { isProjectPath, ProjectSync, type ProjectConflict, type ProjectStatus } from './project-sync.js';
 
 const ASSOCIATION = 'lsw.projectAssociation';
@@ -16,6 +17,7 @@ const LABELS: Record<ProjectStatus['state'], string> = {
   Syncing: '同步中',
   Saved: '工作区已同步',
   Offline: '离线 · 本地可编辑',
+  Reconnecting: '正在重新连接',
   Conflict: '工作区有冲突',
   Error: '工作区同步遇到问题',
   Disconnected: '工作区未连接',
@@ -25,18 +27,22 @@ interface Association {
   folder: string;
   url: string;
   workspaceId: string;
+  /** 该工作区用的是局域网明文（ws:// 私有网段），重开 VS Code 时要沿用这个同意。 */
+  insecure?: boolean;
 }
 
 interface JoinOptions {
   url?: string;
   workspaceId?: string;
   token?: string;
+  /** 用户已勾选"局域网明文"（同一 WiFi 直连）。 */
+  allowInsecureLan?: boolean;
 }
 
 interface ProjectCommands {
   defaultUrl: string;
   defaultId: string;
-  validateUrl: (url: string) => URL;
+  validateUrl: (url: string, options?: { allowInsecureLan?: boolean }) => URL;
   onConnectionChange: (joined: boolean) => void;
 }
 
@@ -123,7 +129,7 @@ class ProjectSession implements vscode.Disposable {
 
   status(): ProjectStatus {
     const status = this.sync.status();
-    if (this.blocked.size && status.state !== 'Offline' && status.state !== 'Error') {
+    if (this.blocked.size && status.state !== 'Offline' && status.state !== 'Error' && status.state !== 'Reconnecting') {
       return {
         ...status,
         state: 'Conflict',
@@ -227,6 +233,8 @@ export function registerProjectCommands(context: vscode.ExtensionContext, comman
   let connectionForm: vscode.WebviewPanel | undefined;
   let joining = false;
   let generation = 0;
+  /** 当前连接是否是局域网明文，用于状态栏提示（不是安全开关，只做告知）。 */
+  let insecureLink = false;
   const disconnected: ProjectStatus = { state: 'Disconnected', files: 0, conflicts: 0 };
   const getStatus = () => active?.status() ?? disconnected;
   const chooseConflict = async (placeHolder: string) => {
@@ -248,13 +256,16 @@ export function registerProjectCommands(context: vscode.ExtensionContext, comman
     const icon = state === 'Saved' ? 'check' : state === 'Conflict' || state === 'Error' ? 'warning' : 'sync';
     bar.text = '$(' + icon + ') Folder Relay ' + LABELS[state];
     const count = conflicts ? ' · ' + conflicts + ' 个冲突' : '';
-    bar.tooltip = files + ' 个文件' + count + (error ? '\n' + error : '');
+    bar.tooltip = files + ' 个文件' + count
+      + (insecureLink ? '\n局域网明文连接（同一 WiFi 直连，未加密）' : '')
+      + (error ? '\n' + error : '');
     bar.command = state === 'Conflict' ? 'lsw.reviewProjectConflict' : 'lsw.projectStatus';
     bar.show();
   };
 
   const stop = () => {
     generation++;
+    insecureLink = false;
     active?.dispose();
     active = undefined;
     commands.onConnectionChange(false);
@@ -262,6 +273,7 @@ export function registerProjectCommands(context: vscode.ExtensionContext, comman
   };
 
   const start = (folder: vscode.WorkspaceFolder, association: Association, token: string) => {
+    insecureLink = association.insecure === true;
     active?.dispose();
     active = new ProjectSession(
       folder, association, token, path.join(context.globalStorageUri.fsPath, 'projects', associationKey(association)), refresh,
@@ -281,7 +293,7 @@ export function registerProjectCommands(context: vscode.ExtensionContext, comman
       const token = await context.secrets.get(tokenKey(association));
       if (attempt !== generation || active || joining) return;
       if (!token || !TOKEN.test(token)) throw new Error('请用 LSW: Join Shared Project 重新填写连接令牌。');
-      commands.validateUrl(association.url);
+      commands.validateUrl(association.url, { allowInsecureLan: association.insecure === true });
       start(folder, association, token);
     } catch (error) {
       void vscode.window.showWarningMessage(error instanceof Error ? error.message : '无法恢复 LSW 工作区。');
@@ -300,13 +312,18 @@ export function registerProjectCommands(context: vscode.ExtensionContext, comman
       const address = connectionAddress(options.url ?? commands.defaultUrl);
       let url: URL;
       try {
-        url = commands.validateUrl(address);
+        url = commands.validateUrl(address, { allowInsecureLan: options.allowInsecureLan === true });
       } catch {
-        throw new Error('请填写有效的服务器地址。本机可以用 ws://127.0.0.1:1234，跨电脑请用部署好的加密地址。');
+        throw new Error('请填写有效的服务器地址。本机用 ws://127.0.0.1:1234；同一 WiFi 直连需填 ws://对方内网IP:1234 并勾选「局域网明文」；跨互联网请用 wss:// 地址。');
       }
       const workspaceId = (options.workspaceId ?? commands.defaultId).trim().toLowerCase();
       if (!UUID.test(workspaceId)) throw new Error('工作区 ID 格式有误，请复制发起人提供的完整 ID。');
-      const association = { folder: folder.uri.toString(), url: url.href, workspaceId };
+      const association = {
+        folder: folder.uri.toString(),
+        url: url.href,
+        workspaceId,
+        insecure: url.protocol === 'ws:' && options.allowInsecureLan === true && !/^(127\.0\.0\.1|localhost|\[::1\])$/.test(url.hostname),
+      };
       const existing = context.workspaceState.get<Association>(ASSOCIATION);
       if (active && existing && associationKey(existing) !== associationKey(association)) {
         throw new Error('当前文件夹已连接另一个工作区。请用新文件夹加入。');
@@ -359,6 +376,7 @@ export function registerProjectCommands(context: vscode.ExtensionContext, comman
       folder: folder.uri.fsPath,
       url: existing?.url ?? commands.defaultUrl,
       workspaceId: existing?.workspaceId ?? commands.defaultId,
+      insecureLan: existing?.insecure,
     }, async input => {
       if (!await joinProject(input)) throw new Error('工作区已切换，请在新的文件夹中重新连接。');
     });
@@ -435,7 +453,59 @@ export function registerProjectCommands(context: vscode.ExtensionContext, comman
       }
       return status;
     }),
+    vscode.commands.registerCommand('lsw.copyJoinLink', async () => {
+      const folder = currentFolder();
+      const association = context.workspaceState.get<Association>(ASSOCIATION);
+      if (!folder || !association || !active) {
+        void vscode.window.showInformationMessage('先连接一个共享工作区，再复制加入链接。');
+        return;
+      }
+      const token = await context.secrets.get(tokenKey(association));
+      if (!token) {
+        void vscode.window.showWarningMessage('找不到这个工作区的令牌，请重新连接一次。');
+        return;
+      }
+      try {
+        const link = buildJoinLink({
+          url: endpointToJoinUrl(association.url),
+          workspaceId: association.workspaceId,
+          token,
+          allowInsecureLan: association.insecure === true,
+        });
+        await vscode.env.clipboard.writeText(link);
+        void vscode.window.showInformationMessage('加入链接已复制。发给组员后，对方点一次就会自动填好地址、工作区和令牌。');
+      } catch (error) {
+        void vscode.window.showWarningMessage(error instanceof Error ? error.message : '无法生成加入链接。');
+      }
+    }),
   );
   void restore();
-  return { isJoined: () => Boolean(active) };
+
+  /**
+   * 处理 `vscode://lsw-local.latex-sync-workspace/join?...`（一键加入链接）。
+   * 解析失败就静默返回：VS Code 会把任何 URI 都转过来，不能对无关链接弹错误。
+   */
+  const joinFromLink = async (uri: vscode.Uri): Promise<void> => {
+    let target;
+    try {
+      target = parseJoinLink(uri.toString());
+    } catch (error) {
+      void vscode.window.showErrorMessage(error instanceof Error ? error.message : '这个加入链接不完整。');
+      return;
+    }
+    if (!target) return;
+    try {
+      await joinProject({
+        url: target.url,
+        workspaceId: target.workspaceId,
+        token: target.token,
+        allowInsecureLan: target.allowInsecureLan === true,
+      });
+      void vscode.window.showInformationMessage('已通过加入链接连上共享工作区。');
+    } catch (error) {
+      void vscode.window.showErrorMessage(error instanceof Error ? error.message : '无法通过加入链接连接。');
+    }
+  };
+
+  return { isJoined: () => Boolean(active), joinFromLink };
 }

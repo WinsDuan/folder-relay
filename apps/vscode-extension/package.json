@@ -3,7 +3,7 @@
   "displayName": "Folder Relay",
   "description": "Collaborate in a local VS Code folder. Sync code, documents, data, and assets, with offline editing and automatic reconnection.",
   "publisher": "lsw-local",
-  "version": "0.2.4",
+  "version": "0.3.2",
   "type": "module",
   "license": "MIT",
   "engines": { "vscode": "^1.96.0" },
@@ -17,7 +17,9 @@
     "commands": [
       { "command": "lsw.joinProject", "title": "LSW: Join Shared Project" },
       { "command": "lsw.projectStatus", "title": "LSW: Show Project Status" },
+      { "command": "lsw.copyJoinLink", "title": "LSW: Copy Join Link" },
       { "command": "lsw.leaveProject", "title": "LSW: Leave Shared Project" },
+      { "command": "lsw.openOfficeFile", "title": "Folder Relay: 在办公应用中打开" },
       { "command": "lsw.reviewProjectConflict", "title": "LSW: Review Project Conflict" },
       { "command": "lsw.publishResolvedProjectFile", "title": "LSW: Publish Resolved Project File" },
       { "command": "lsw.connect", "title": "LSW: Connect Single File (Legacy)" },
@@ -25,7 +27,19 @@
       { "command": "lsw.status", "title": "LSW: Show Sync Status" },
       { "command": "lsw.prepareAiEdit", "title": "LSW: Prepare AI Edit" },
       { "command": "lsw.reviewConflict", "title": "LSW: Review Conflict" }
-    ]
+    ],
+    "menus": {
+      "explorer/context": [
+        {
+          "command": "lsw.openOfficeFile",
+          "when": "!isWeb && resourceScheme == file && !explorerResourceIsFolder && resourceFilename =~ /^(?!~[$])/ && resourceExtname =~ /^\\.(doc[xm]?|dot[xm]?|rtf|xls[bmx]?|xlt[mx]?|pp[ts][mx]?|pot[mx]?)$/i",
+          "group": "navigation@30"
+        }
+      ],
+      "commandPalette": [
+        { "command": "lsw.openOfficeFile", "when": "!isWeb && workspaceFolderCount > 0" }
+      ]
+    }
   },
   "scripts": {
     "build": "node esbuild.mjs",

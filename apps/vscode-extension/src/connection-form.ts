@@ -5,12 +5,15 @@ export interface ConnectionFormState {
   folder: string;
   url: string;
   workspaceId: string;
+  /** 上次连接是否用了局域网明文（同一 WiFi 直连），用于回填勾选状态。 */
+  insecureLan?: boolean;
 }
 
 export interface ConnectionFormInput {
   url: string;
   workspaceId: string;
   token: string;
+  allowInsecureLan?: boolean;
 }
 
 type FormStatus =
@@ -49,7 +52,7 @@ export function openConnectionForm(
     status = { state: 'connecting' };
     postStatus();
     try {
-      await connect({ url, workspaceId, token });
+      await connect({ url, workspaceId, token, allowInsecureLan: data.allowInsecureLan === true });
       status = { state: 'connected' };
     } catch (error) {
       const message = error instanceof Error && error.message ? error.message : '无法连接共享工作区。';
@@ -156,6 +159,17 @@ function connectionHtml(initial: ConnectionFormState, nonce: string): string {
           <input id="access-token" type="password" placeholder="粘贴完整令牌" required autocomplete="off" aria-describedby="token-help">
           <p id="token-help" class="hint">从发起人处获取。至少 24 个字符，不含空格。</p>
         </div>
+        <div class="insecure">
+          <label for="insecure-lan">
+            <input id="insecure-lan" type="checkbox" ${initial.insecureLan ? 'checked' : ''}>
+            同一 WiFi / 校园网直连（局域网明文，不加密）
+          </label>
+          <p id="insecure-help" class="hint">
+            只有在<strong>同一个可信局域网</strong>里、并且地址形如 <code>ws://192.168.x.x:1234</code> 时才勾选。
+            勾选后流量在该局域网内<strong>不加密</strong>，同网段的其他人可嗅探。
+            跨互联网协作请让管理员提供 <code>wss://</code> 地址。
+          </p>
+        </div>
       </fieldset>
       <button id="connect" type="submit">连接工作区</button>
       <p id="connection-feedback" class="feedback" aria-live="polite" aria-atomic="true"></p>
@@ -201,7 +215,14 @@ function connectionHtml(initial: ConnectionFormState, nonce: string): string {
         return;
       }
       showStatus('connecting', '正在验证地址、工作区 ID 和令牌…');
-      vscode.postMessage({ type: 'connect', url: address.value.trim(), workspaceId: workspaceId.value.trim(), token: token.value });
+      const insecureLan = document.getElementById('insecure-lan');
+        vscode.postMessage({
+          type: 'connect',
+          url: address.value.trim(),
+          workspaceId: workspaceId.value.trim(),
+          token: token.value,
+          allowInsecureLan: Boolean(insecureLan && insecureLan.checked),
+        });
     });
 
     window.addEventListener('message', ({ data }) => {

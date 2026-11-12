@@ -5,12 +5,15 @@ import { DatabaseSync } from 'node:sqlite';
 import { openWorkspaceStore } from './workspace-store.mjs';
 
 const APPLICATION_ID = 0x4c535731;
+// v1 = 0.2 (snapshots + workspace_files); v2 = 0.3 (adds seq log, idempotency
+// and member tables, which each module creates with CREATE TABLE IF NOT EXISTS).
+const SCHEMA_VERSION = 2;
 
 export function sha256(bytes) {
   return createHash('sha256').update(bytes).digest('hex');
 }
 
-export function openSnapshotStore(databasePath) {
+export function openSnapshotStore(databasePath, { maxWorkspaceBytes } = {}) {
   const path = resolve(databasePath);
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
   const db = new DatabaseSync(path);
@@ -28,7 +31,7 @@ export function openSnapshotStore(databasePath) {
       if (applicationId !== 0 || version !== 0 || schemaExists) {
         throw new Error('LSW_DB_PATH refers to a database owned by another application');
       }
-    } else if (version !== 1) {
+    } else if (version !== 1 && version !== SCHEMA_VERSION) {
       throw new Error('Unsupported snapshot database version');
     }
     db.exec(`
@@ -42,7 +45,7 @@ export function openSnapshotStore(databasePath) {
         updated_at TEXT NOT NULL
       ) STRICT;
       PRAGMA application_id = ${APPLICATION_ID};
-      PRAGMA user_version = 1;
+      PRAGMA user_version = ${SCHEMA_VERSION};
       COMMIT;
     `);
 
@@ -56,9 +59,10 @@ export function openSnapshotStore(databasePath) {
         updated_at = excluded.updated_at
       WHERE snapshots.sha256 <> excluded.sha256
     `);
-    const workspace = openWorkspaceStore(db);
+    const workspace = openWorkspaceStore(db, maxWorkspaceBytes);
 
     return {
+      database: db,
       workspace,
       load(documentId) {
         const row = read.get(documentId);

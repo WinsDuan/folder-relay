@@ -22,6 +22,8 @@ npm start
 
 如果端口 `1234` 已被占用，可以在第一次启动前改成 `1236`。VS Code 填写的地址也要改成 `ws://127.0.0.1:1236`。同一个服务实例使用一个工作区 ID。
 
+共享工作区的默认总容量是 128 MiB。要提高上限，在服务端启动前设置 `$env:LSW_MAX_WORKSPACE_MIB = '512'`，再运行 `npm.cmd start`。启动日志的 `maxWorkspaceMiB` 会显示实际生效的上限。重启时沿用原工作区 ID、数据库路径和令牌，即可继续同步原项目。
+
 ### 重启时沿用原令牌
 
 如果服务正在运行，先在原窗口按 `Ctrl+C`，等提示符出现。仍在这个 PowerShell 窗口中运行：
@@ -50,7 +52,7 @@ npm start
 
 ## 在本机用两个窗口试用
 
-1. 在仓库根目录执行 `npm run package:vsix`。在 VS Code 的扩展面板选择 **从 VSIX 安装**，选取 `apps/vscode-extension/latex-sync-workspace-0.2.4.vsix`。也可以安装组员拿到的同版本 VSIX。
+1. 在 VS Code 的扩展面板选择 **从 VSIX 安装**，选取发布页下载的 VSIX。自行构建时，在仓库根目录执行 `npm run package:vsix`，选取 `apps/vscode-extension` 下刚生成的安装包。 [Folder Relay v0.3.2 发布页](https://github.com/WinsDuan/folder-relay/releases/tag/v0.3.2)
 2. 在第一个 VS Code 窗口用 **文件 → 打开文件夹** 打开一份试验项目。点击状态栏 **Folder Relay 连接工作区**，也可以按 `Ctrl+Shift+P` 搜索 `LSW: Join Shared Project`。
 3. 在 **连接共享工作区** 窗口确认当前本地文件夹，再填写下表。点 **连接工作区**，等状态栏显示 **工作区已同步**。
 
@@ -80,7 +82,7 @@ npm start
 - 普通编辑、Codex 或 Claude 修改，以及脚本写入项目的文件，都可以在保存到磁盘后同步。使用各自电脑上的 XeLaTeX 等工具编译。如需预览自动刷新，可在本机配置 LaTeX Workshop。
 - 成员关掉 VS Code 或离线时，其他在线成员仍能向运行中的服务保存。如果某个成员断网，该成员仍可编辑和编译已有文件，恢复连接后扩展会重试并同步。运行服务的主机离线期间，所有成员只能使用本地副本。
 - 修改了不同位置的文本有机会自动合并。同一处文字或同一个二进制文件同时改动时，扩展可能保留冲突副本，其余文件继续同步。点击状态栏的 **工作区有冲突** 查看副本。整理并保存实际项目文件后，执行 `LSW: Publish Resolved Project File`。共享版本又有变化时，扩展会更新冲突副本。
-- Git、VS Code 的本机配置、依赖目录和常见构建产物在共享范围之外。当前单文件上限 16 MiB，整个工作区上限 128 MiB。同步规则独立于 `.gitignore`，共享前请选择只包含组员可见内容的项目目录。
+- Git、VS Code 的本机配置、依赖目录和常见构建产物在共享范围之外。单文件上限 16 MiB，工作区总容量默认 128 MiB，可在服务端调整。同步规则独立于 `.gitignore`，共享前请选择只包含组员可见内容的项目目录。
 - 旧版单文件会话仍可通过 `LSW: Connect Single File (Legacy)` 打开。若要将旧项目转到工作区模式，先把合并后的源码放进项目文件夹，再用该文件夹发起共享。
 
 ## 常见问题

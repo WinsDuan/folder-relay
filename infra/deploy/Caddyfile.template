@@ -1,0 +1,36 @@
+# Folder Relay 反向代理模板（由 infra/deploy/bootstrap.sh 渲染到 /etc/caddy/Caddyfile）
+#
+# 两个占位符：__DOMAIN__（站点地址）、__PORT__（服务端本机端口）。
+#
+# 四条不能省的设置（少一条就会出现"看起来连上了但同步很怪"）：
+#   1. flush_interval -1     关响应缓冲，否则 WS 帧会被攒着发，心跳像"没到"
+#   2. read_timeout 0        长连接默认会被反代超时掐死（Caddy 默认对后端有超时）
+#   3. request_body 8MB      分片单块 ≤ 512 KiB，整文件走多块；旧整块 PUT 留余量
+#   4. X-Forwarded-Proto     服务端 LSW_TRUST_PROXY=1 时据此判断 wss:// 与 /join 的证书可见性
+
+__DOMAIN__ {
+    encode zstd gzip
+
+    reverse_proxy 127.0.0.1:__PORT__ {
+        flush_interval -1
+        transport http {
+            read_timeout 0
+            write_timeout 0
+            dial_timeout 5s
+        }
+        # X-Forwarded-For / X-Forwarded-Proto 由 Caddy 默认透传（服务端 LSW_TRUST_PROXY=1 依赖它们）
+        header_up X-Real-IP {remote_host}
+    }
+
+    request_body {
+        max_size 8MB
+    }
+
+    log {
+        output file /var/log/caddy/folder-relay.log {
+            roll_size 20MiB
+            roll_keep 5
+        }
+        format json
+    }
+}
